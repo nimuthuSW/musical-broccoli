@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Score Entry</title>
+<style>
+  :root {
+    --bg: #f6f5f1; --card: #ffffff; --text: #1d1d1b; --muted: #6b6a64;
+    --line: #dddbd3; --accent: #1f6f4a; --accent-text: #ffffff;
+    --error-bg: #fbeaea; --error: #9b1c1c; --ok-bg: #e7f4ec; --warn-bg: #fdf4dc;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161614; --card: #22221f; --text: #ecebe6; --muted: #a09f98;
+      --line: #3a3a35; --accent: #4fb584; --accent-text: #0d1f16;
+      --error-bg: #3a1d1d; --error: #f4a5a5; --ok-bg: #1b3326; --warn-bg: #3a3218;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 17px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 440px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 1.4rem; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+    padding: 18px;
+  }
+  label { display: block; font-weight: 600; margin: 0 0 6px; }
+  .field { margin-bottom: 16px; }
+  select, input {
+    width: 100%; font: inherit; color: inherit; background: var(--bg);
+    border: 1px solid var(--line); border-radius: 8px; padding: 12px;
+  }
+  input[type=number] { font-size: 1.6rem; font-variant-numeric: tabular-nums; }
+  button {
+    width: 100%; font: inherit; font-weight: 600; border: 0; border-radius: 8px;
+    padding: 14px; background: var(--accent); color: var(--accent-text); cursor: pointer;
+  }
+  button.secondary { background: transparent; color: var(--text); border: 1px solid var(--line); margin-top: 10px; }
+  button:disabled { opacity: .6; cursor: default; }
+  .round { color: var(--muted); font-weight: 600; text-transform: uppercase; font-size: .8rem; letter-spacing: .05em; }
+  .vs { font-size: 1.15rem; margin: 4px 0 16px; }
+  .note { color: var(--muted); font-size: .9rem; margin: 0 0 16px; }
+  .msg { border-radius: 8px; padding: 12px; margin-bottom: 16px; }
+  .msg.error { background: var(--error-bg); color: var(--error); }
+  .msg.ok { background: var(--ok-bg); }
+  .msg.warn { background: var(--warn-bg); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Score entry</h1>
+  <p class="sub">Enter your game result. Both players must be here.</p>
+
+  <div id="message" class="msg" hidden></div>
+
+  <form id="code-form" class="card" hidden>
+    <div class="field">
+      <label for="code">Tournament code</label>
+      <input id="code" autocomplete="off" autocapitalize="characters" spellcheck="false" required>
+    </div>
+    <p class="note">Ask the director for the code if you don't have it.</p>
+    <button type="submit">Continue</button>
+  </form>
+
+  <form id="pick" class="card" hidden>
+    <div class="field" id="division-field">
+      <label for="division">Division</label>
+      <select id="division"></select>
+    </div>
+    <div class="field">
+      <label for="player">Your name</label>
+      <select id="player" required></select>
+    </div>
+    <button type="submit">Next</button>
+  </form>
+
+  <form id="scores" class="card" hidden>
+    <div class="round" id="round"></div>
+    <div class="vs" id="vs"></div>
+    <div class="field">
+      <label for="player-score" id="player-label"></label>
+      <input id="player-score" type="number" inputmode="numeric" required min="-500" max="2000">
+    </div>
+    <div class="field">
+      <label for="opponent-score" id="opponent-label"></label>
+      <input id="opponent-score" type="number" inputmode="numeric" required min="-500" max="2000">
+    </div>
+    <p class="note">Check both scores with your opponent before submitting.</p>
+    <button type="submit" id="submit">Submit result</button>
+    <button type="button" class="secondary" id="back">Back</button>
+  </form>
+
+  <div id="done" hidden>
+    <button type="button" id="again">Enter another result</button>
+  </div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+let divisions = [];
+let match = null;
+
+// The tournament code can arrive in the link (?code=...). Remember it on this
+// device and take it out of the address bar.
+let code = "";
+try { code = localStorage.getItem("tournamentCode") || ""; } catch (e) {}
+const linkCode = new URLSearchParams(location.search).get("code");
+if (linkCode) {
+  code = linkCode;
+  saveCode(code);
+  history.replaceState(null, "", location.pathname);
+}
+
+function saveCode(value) {
+  try { localStorage.setItem("tournamentCode", value); } catch (e) {}
+}
+
+function show(section) {
+  for (const id of ["code-form", "pick", "scores", "done"]) $(id).hidden = id !== section;
+}
+
+class WrongCode extends Error {}
+
+function message(text, kind) {
+  $("message").textContent = text || "";
+  $("message").className = "msg " + (kind || "");
+  $("message").hidden = !text;
+}
+
+async function api(path, options = {}) {
+  const headers = { ...(options.headers || {}), "X-Access-Code": code };
+  const res = await fetch(path, { ...options, headers });
+  const body = await res.json().catch(() => ({}));
+  if (res.status === 401) {
+    show("code-form");
+    throw new WrongCode(body.error || "Wrong tournament code.");
+  }
+  if (!res.ok) throw new Error(body.error || "Something went wrong. Please see the director.");
+  return body;
+}
+
+function fillPlayers() {
+  const div = divisions.find(d => d.name === $("division").value) || divisions[0];
+  const select = $("player");
+  select.replaceChildren(new Option("Choose…", ""));
+  [...div.players].sort((a, b) => a.name.localeCompare(b.name))
+    .forEach(p => select.add(new Option(`${p.name} (#${p.number})`, p.number)));
+}
+
+async function load() {
+  if (!code) return show("code-form");
+  try {
+    divisions = await api("/api/divisions");
+  } catch (e) {
+    return message(e.message, "error");
+  }
+  $("division").replaceChildren();
+  divisions.forEach(d => $("division").add(new Option(d.name, d.name)));
+  $("division-field").hidden = divisions.length < 2;
+  fillPlayers();
+  show("pick");
+}
+
+$("code-form").addEventListener("submit", e => {
+  e.preventDefault();
+  message();
+  code = $("code").value.trim().toUpperCase();
+  saveCode(code);
+  load();
+});
+
+$("division").addEventListener("change", fillPlayers);
+
+$("pick").addEventListener("submit", async e => {
+  e.preventDefault();
+  message();
+  const q = new URLSearchParams({ division: $("division").value, player: $("player").value });
+  try {
+    match = await api("/api/match?" + q);
+  } catch (err) {
+    return message(err.message, "error");
+  }
+  $("round").textContent = `Round ${match.round}`;
+  $("vs").textContent = `${match.player.name} vs ${match.opponent.name}`;
+  $("player-label").textContent = `${match.player.name}'s score`;
+  $("opponent-label").textContent = `${match.opponent.name}'s score`;
+  $("player-score").value = $("opponent-score").value = "";
+  show("scores");
+  $("player-score").focus();
+});
+
+$("scores").addEventListener("submit", async e => {
+  e.preventDefault();
+  message();
+  $("submit").disabled = true;
+  $("submit").textContent = "Recording…";
+  try {
+    const result = await api("/api/score", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        division: match.division, player: match.player.number, round: match.round,
+        player_score: Number($("player-score").value),
+        opponent_score: Number($("opponent-score").value),
+      }),
+    });
+    const line = `Round ${result.round}: ${result.player} ${$("player-score").value}, ` +
+                 `${result.opponent} ${$("opponent-score").value}.`;
+    if (result.status === "recorded") message(`Recorded. ${line}`, "ok");
+    else message(`Sent to the director, but not confirmed yet. ${line} ` +
+                 "If it doesn't appear on the standings soon, please tell the director.", "warn");
+    show("done");
+  } catch (err) {
+    message(err.message, "error");
+  } finally {
+    $("submit").disabled = false;
+    $("submit").textContent = "Submit result";
+  }
+});
+
+$("back").addEventListener("click", () => { message(); show("pick"); });
+$("again").addEventListener("click", () => { message(); $("player").value = ""; show("pick"); });
+
+load();
+</script>
+</body>
+</html>
