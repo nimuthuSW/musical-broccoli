@@ -22,7 +22,8 @@ The app only reads the tournament files; tsh is the only thing that writes them.
 
 ## Running it
 
-Needs Python 3.8 or later on the director's laptop (macOS or Linux). Nothing to install.
+Needs Python 3.8 or later on the director's laptop (macOS or Linux), plus `cloudflared`
+if you use `--public`.
 
 ```sh
 python3 -m tshweb /path/to/tournament --tsh "perl /path/to/tsh.pl" --public
