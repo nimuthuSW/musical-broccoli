@@ -1,6 +1,7 @@
 import json
 import os
 import shutil
+import stat
 import sys
 import tempfile
 import threading
@@ -12,6 +13,7 @@ from tshweb import tournament
 from tshweb.desk import ScoreDesk
 from tshweb.driver import Tsh
 from tshweb.tournament import MatchError
+from tshweb.tunnel import TunnelError, start_tunnel
 from tshweb.web import make_server
 
 FAKE_TSH = os.path.join(os.path.dirname(__file__), "fake_tsh.py")
@@ -74,7 +76,7 @@ class EndToEndTest(TournamentFolder):
                        idle_seconds=0, line_delay=0.05)
         self.tsh.start()
         self.desk = ScoreDesk(self.folder, self.tsh, confirm_timeout=5)
-        self.server = make_server(self.desk, host="127.0.0.1", port=0)
+        self.server = make_server(self.desk, "ABC234", host="127.0.0.1", port=0)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
 
@@ -85,10 +87,10 @@ class EndToEndTest(TournamentFolder):
         self.tsh.wait()
         super().tearDown()
 
-    def request(self, path, body=None):
+    def request(self, path, body=None, code="abc234"):
         data = json.dumps(body).encode() if body is not None else None
-        req = urllib.request.Request(self.base + path, data=data,
-                                     headers={"Content-Type": "application/json"})
+        req = urllib.request.Request(self.base + path, data=data, headers={
+            "Content-Type": "application/json", "X-Access-Code": code})
         try:
             with urllib.request.urlopen(req) as res:
                 return res.status, json.load(res)
@@ -128,12 +130,54 @@ class EndToEndTest(TournamentFolder):
             "player_score": 99999, "opponent_score": 300})
         self.assertEqual(status, 409)
 
+    def test_wrong_code_is_refused(self):
+        status, result = self.request("/api/divisions", code="WRONG1")
+        self.assertEqual(status, 401)
+        status, result = self.request("/api/score", {
+            "division": "A", "player": 4, "round": 3,
+            "player_score": 433, "opponent_score": 377}, code="")
+        self.assertEqual(status, 401)
+        self.assertEqual(len(tournament.read_players(self.t_file)[3].scores), 2)
+
     def test_page_and_divisions(self):
         with urllib.request.urlopen(self.base + "/") as res:
             self.assertIn(b"Score entry", res.read())
         status, divisions = self.request("/api/divisions")
         self.assertEqual(divisions[0]["name"], "A")
         self.assertEqual(len(divisions[0]["players"]), 4)
+
+
+class TunnelTest(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.dir)
+
+    def fake_cloudflared(self, output):
+        path = os.path.join(self.dir, "cloudflared")
+        with open(path, "w") as f:
+            f.write(f"#!/bin/sh\nprintf '{output}'\nsleep 30\n")
+        os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC)
+        return path
+
+    def test_reads_public_address(self):
+        binary = self.fake_cloudflared(
+            "INF Requesting new quick Tunnel\\n"
+            "INF |  https://brave-otter-lake.trycloudflare.com  |\\n")
+        proc, url = start_tunnel(8080, binary, timeout=5)
+        proc.terminate()
+        proc.wait()
+        self.assertEqual(url, "https://brave-otter-lake.trycloudflare.com")
+
+    def test_missing_program(self):
+        with self.assertRaisesRegex(TunnelError, "isn't installed"):
+            start_tunnel(8080, os.path.join(self.dir, "nope"))
+
+    def test_no_address(self):
+        binary = self.fake_cloudflared("ERR failed to connect\\n")
+        with self.assertRaisesRegex(TunnelError, "didn't report"):
+            start_tunnel(8080, binary, timeout=1)
 
 
 if __name__ == "__main__":

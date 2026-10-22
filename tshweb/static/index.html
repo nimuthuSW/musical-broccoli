@@ -59,7 +59,16 @@
 
   <div id="message" class="msg" hidden></div>
 
-  <form id="pick" class="card">
+  <form id="code-form" class="card" hidden>
+    <div class="field">
+      <label for="code">Tournament code</label>
+      <input id="code" autocomplete="off" autocapitalize="characters" spellcheck="false" required>
+    </div>
+    <p class="note">Ask the director for the code if you don't have it.</p>
+    <button type="submit">Continue</button>
+  </form>
+
+  <form id="pick" class="card" hidden>
     <div class="field" id="division-field">
       <label for="division">Division</label>
       <select id="division"></select>
@@ -96,9 +105,26 @@ const $ = id => document.getElementById(id);
 let divisions = [];
 let match = null;
 
-function show(section) {
-  for (const id of ["pick", "scores", "done"]) $(id).hidden = id !== section;
+// The tournament code can arrive in the link (?code=...). Remember it on this
+// device and take it out of the address bar.
+let code = "";
+try { code = localStorage.getItem("tournamentCode") || ""; } catch (e) {}
+const linkCode = new URLSearchParams(location.search).get("code");
+if (linkCode) {
+  code = linkCode;
+  saveCode(code);
+  history.replaceState(null, "", location.pathname);
 }
+
+function saveCode(value) {
+  try { localStorage.setItem("tournamentCode", value); } catch (e) {}
+}
+
+function show(section) {
+  for (const id of ["code-form", "pick", "scores", "done"]) $(id).hidden = id !== section;
+}
+
+class WrongCode extends Error {}
 
 function message(text, kind) {
   $("message").textContent = text || "";
@@ -106,9 +132,14 @@ function message(text, kind) {
   $("message").hidden = !text;
 }
 
-async function api(path, options) {
-  const res = await fetch(path, options);
+async function api(path, options = {}) {
+  const headers = { ...(options.headers || {}), "X-Access-Code": code };
+  const res = await fetch(path, { ...options, headers });
   const body = await res.json().catch(() => ({}));
+  if (res.status === 401) {
+    show("code-form");
+    throw new WrongCode(body.error || "Wrong tournament code.");
+  }
   if (!res.ok) throw new Error(body.error || "Something went wrong. Please see the director.");
   return body;
 }
@@ -122,15 +153,26 @@ function fillPlayers() {
 }
 
 async function load() {
+  if (!code) return show("code-form");
   try {
     divisions = await api("/api/divisions");
   } catch (e) {
     return message(e.message, "error");
   }
+  $("division").replaceChildren();
   divisions.forEach(d => $("division").add(new Option(d.name, d.name)));
   $("division-field").hidden = divisions.length < 2;
   fillPlayers();
+  show("pick");
 }
+
+$("code-form").addEventListener("submit", e => {
+  e.preventDefault();
+  message();
+  code = $("code").value.trim().toUpperCase();
+  saveCode(code);
+  load();
+});
 
 $("division").addEventListener("change", fillPlayers);
 

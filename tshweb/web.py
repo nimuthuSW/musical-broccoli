@@ -1,7 +1,9 @@
 """HTTP server: the score entry page plus a small JSON API."""
 
+import hmac
 import json
 import os
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -10,7 +12,9 @@ from .tournament import MatchError
 _PAGE = os.path.join(os.path.dirname(__file__), "static", "index.html")
 
 
-def make_server(desk, host="0.0.0.0", port=8080):
+def make_server(desk, code, host="0.0.0.0", port=8080):
+    """Serve the page; every /api/ request must carry the tournament code."""
+
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
             pass  # the director's terminal belongs to tsh
@@ -24,7 +28,17 @@ def make_server(desk, host="0.0.0.0", port=8080):
             self.end_headers()
             self.wfile.write(data)
 
+        def _code_ok(self):
+            given = self.headers.get("X-Access-Code", "").strip().upper()
+            if hmac.compare_digest(given.encode(), code.upper().encode()):
+                return True
+            time.sleep(1)  # slow down anyone guessing codes
+            self._json(401, {"error": "Wrong tournament code."})
+            return False
+
         def _call(self, fn, *args):
+            if not self._code_ok():
+                return
             try:
                 self._json(200, fn(*args))
             except MatchError as e:
